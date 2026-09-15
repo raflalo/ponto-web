@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Símbolo Ponto+</title>
+  <desc id="desc">Letra P estilizada em contorno azul com um sinal de adição arredondado.</desc>
+  <g transform="translate(-2.5 -1.5) scale(.1)" stroke="#1D6FE8" stroke-width="30" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M86 440V163c0-52 42-94 94-94h93c100 0 164 52 164 132s-64 132-164 132h-94L86 440Z"/>
+    <path d="M221 201h78M260 162v78"/>
+  </g>
+</svg>
