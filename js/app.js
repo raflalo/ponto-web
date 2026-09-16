@@ -2190,9 +2190,13 @@
       syncTodayHistory();
       monthRevisions[currentDayKey.slice(0, 7)] = journeyRevision;
       dataMessage = "";
+      var punchLabel = PUNCH_LABELS[PUNCH_TYPES.indexOf(response.punch.type)];
+      var registeredLabel = ["break_start", "break_end"].includes(response.punch.type)
+        ? " registrado às "
+        : " registrada às ";
       announce(
-        PUNCH_LABELS[PUNCH_TYPES.indexOf(response.punch.type)] +
-          " registrada às " +
+        punchLabel +
+          registeredLabel +
           formatShortTime(new Date(response.punch.occurred_at)) +
           ".",
       );
