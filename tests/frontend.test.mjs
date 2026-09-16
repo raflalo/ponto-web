@@ -28,6 +28,10 @@ function createStorage() {
 function createApiContext(fetchImplementation) {
   const context = {
     window: {},
+    AbortController,
+    setTimeout,
+    clearTimeout,
+    atob,
     localStorage: createStorage(),
     sessionStorage: createStorage(),
     encodeURIComponent,
@@ -55,8 +59,18 @@ test("arquivos locais, sintaxe e chamadas obrigatórias estão presentes", () =>
     if (/^(data:|https?:)/.test(match[1])) continue;
     assert.ok(fs.existsSync(path.resolve(path.dirname(cssPath), match[1])));
   }
+  assert.match(css, /\.notification-panel\s*\{[^}]*position:\s*fixed;/s);
+  assert.match(css, /\.notification-panel\s*\{[^}]*width:\s*auto;/s);
+  assert.match(css, /--notification-surface:\s*rgb\([^)]+\);/);
+  assert.match(css, /\.notification-panel\s*\{[^}]*border:\s*0;/s);
+  assert.match(css, /\.notification-panel\s*\{[^}]*var\(--notification-surface\) 88%/s);
+  assert.match(css, /\.notification-panel\s*\{[^}]*box-shadow:\s*var\(--shadow-md\)/s);
+  assert.match(css, /\.notification-panel\s*\{[^}]*backdrop-filter:\s*blur\(18px\)/s);
+  assert.match(css, /\.notification-panel\s*\{[^}]*transition:/s);
+  assert.match(css, /\.notification-panel\[hidden\]\s*\{[^}]*opacity:\s*0;/s);
 
   for (const method of [
+    "getHealth",
     "register",
     "login",
     "getProfile",
@@ -90,6 +104,7 @@ test("cliente HTTP usa todas as rotas, métodos e formas de sessão", async () =
 
   await api.register({ name: "Ana", email: "ana@example.com", password: "123456" });
   await api.login({ email: "ana@example.com", password: "123456" });
+  await api.getHealth();
   await api.getProfile();
   await api.updateProfile("Ana Souza");
   await api.getPunches("2026-09");
@@ -101,6 +116,7 @@ test("cliente HTTP usa todas as rotas, métodos e formas de sessão", async () =
     [
       ["http://127.0.0.1:5000/api/auth/register", "POST"],
       ["http://127.0.0.1:5000/api/auth/login", "POST"],
+      ["http://127.0.0.1:5000/api/health", "GET"],
       ["http://127.0.0.1:5000/api/profile", "GET"],
       ["http://127.0.0.1:5000/api/profile", "PATCH"],
       ["http://127.0.0.1:5000/api/punches?month=2026-09", "GET"],
@@ -115,7 +131,7 @@ test("cliente HTTP usa todas as rotas, métodos e formas de sessão", async () =
   assert.equal(context.sessionStorage.getItem("ponto-plus-access-token"), "token-sessao");
 });
 
-test("cliente apresenta falhas de conexão e remove sessão rejeitada", async () => {
+test("cliente apresenta falhas e identifica a sessão rejeitada sem apagar outra", async () => {
   const offline = createApiContext(async () => {
     throw new Error("offline");
   });
@@ -134,14 +150,23 @@ test("cliente apresenta falhas de conexão e remove sessão rejeitada", async ()
   unauthorized.window.PontoPlusApi.saveToken("expirado", true);
   await assert.rejects(
     unauthorized.window.PontoPlusApi.getProfile(),
-    (error) => error.status === 401 && error.code === "expired_token",
+    (error) => error.status === 401 && error.code === "expired_token" && error.requestToken === "expirado",
   );
-  assert.equal(unauthorized.window.PontoPlusApi.accessToken(), null);
+  assert.equal(unauthorized.window.PontoPlusApi.accessToken(), "expirado");
 });
 
 test("estado agrupa batidas reais e calcula a jornada por dia", async () => {
+  const fixedNow = Date.parse("2026-09-15T18:00:00-03:00");
+  class TestDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [fixedNow])); }
+    static now() { return fixedNow; }
+  }
   const hook = `globalThis.__qa = {
     zonedDateKey,
+    formatLongDate,
+    notificationControlMarkup,
+    notificationPanelMarkup,
+    setNotifications(value) { notifications = value; },
     storeMonthResponse,
     dayRecordData,
     loadDateRange,
@@ -156,12 +181,12 @@ test("estado agrupa batidas reais e calcula a jornada por dia", async () => {
   const emptyResponse = (month) => ({
     month,
     punches: [],
-    today: { date: "", punches: [] },
+    today: { date: "", punches: [], revision: 0 },
   });
   const context = {
     console,
     Intl,
-    Date,
+    Date: TestDate,
     Math,
     Number,
     String,
@@ -180,7 +205,7 @@ test("estado agrupa batidas reais e calcula a jornada por dia", async () => {
       documentElement: { dataset: {} },
     },
     window: {
-      PontoPlusApi: { getPunches: async (month) => emptyResponse(month) },
+      PontoPlusApi: { accessToken: () => "qa-token", getPunches: async (month) => emptyResponse(month) },
       location: { hash: "#/login" },
       matchMedia() {
         return { matches: false };
@@ -196,7 +221,24 @@ test("estado agrupa batidas reais e calcula a jornada por dia", async () => {
   vm.runInNewContext(instrumented, context, { filename: "app.js" });
 
   const qa = context.__qa;
-  const now = new Date();
+  assert.equal(
+    qa.formatLongDate(new Date("2026-09-15T15:00:00Z")),
+    "Terça-feira, 15 de setembro",
+  );
+  const emptyNotifications = qa.notificationPanelMarkup();
+  assert.match(emptyNotifications, /Sem novas notificações/);
+  const emptyNotificationControl = qa.notificationControlMarkup();
+  assert.match(emptyNotificationControl, /aria-expanded="false"/);
+  assert.doesNotMatch(emptyNotificationControl, /notification-badge/);
+  qa.setNotifications([
+    { title: "Jornada", message: "Entrada registrada.", read: false },
+  ]);
+  const unreadNotificationControl = qa.notificationControlMarkup();
+  const unreadNotifications = qa.notificationPanelMarkup();
+  assert.match(unreadNotificationControl, /notification-badge/);
+  assert.match(unreadNotifications, /Entrada registrada\./);
+
+  const now = new TestDate();
   const todayKey = qa.zonedDateKey(now);
   const yesterdayKey = qa.zonedDateKey(new Date(now.getTime() - 86400000));
   const month = todayKey.slice(0, 7);
@@ -215,7 +257,7 @@ test("estado agrupa batidas reais e calcula a jornada por dia", async () => {
   qa.storeMonthResponse({
     month,
     punches: yesterdayPunches.concat(todayPunch),
-    today: { date: todayKey, punches: [todayPunch] },
+    today: { date: todayKey, punches: [todayPunch], revision: 1 },
   });
 
   const yesterdayParts = yesterdayKey.split("-").map(Number);

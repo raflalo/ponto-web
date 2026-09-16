@@ -46,10 +46,26 @@
   var punchesByMonth = {};
   var loadingMonths = {};
   var dataMessage = "";
+  var sessionVersion = 0;
+  var profileVersion = 0;
+  var activeToken = null;
+  var journeyRevision = -1;
+  var journeyLoaded = false;
+  var mutationPending = false;
+  var monthRevisions = {};
+  var serverClockOffsetMs = 0;
+  var lastServerTime = 0;
+  var lastSyncAt = 0;
+  var syncPromise = null;
+  var lastSummaryMinute = "";
+  var currentDayKey = zonedDateKey(currentInstant());
+  // A coleção começa vazia e poderá receber dados de uma API de notificações.
+  // O indicador visual considera apenas itens ainda não lidos.
+  var notifications = [];
   var undoExpiresAt = 0;
-  var selectedDate = new Date();
-  var displayedMonth = new Date();
-  var historyRangeEnd = new Date();
+  var selectedDate = todayDate();
+  var displayedMonth = todayDate();
+  var historyRangeEnd = todayDate();
   var historyRangeStart = new Date(
     historyRangeEnd.getFullYear(),
     historyRangeEnd.getMonth(),
@@ -63,30 +79,73 @@
   var historyDraftStart = new Date(historyRangeStart);
   var historyDraftEnd = new Date(historyRangeEnd);
   var preservedScrollY = null;
-  var storedGoalMinutes = Number(
-    localStorage.getItem("ponto-plus-daily-goal-minutes"),
-  );
-  var dailyGoalMinutes =
-    Number.isFinite(storedGoalMinutes) &&
-    storedGoalMinutes >= 1 &&
-    storedGoalMinutes <= 1439
-      ? storedGoalMinutes
-      : DEFAULT_DAILY_GOAL_MINUTES;
+  var dailyGoalMinutes = DEFAULT_DAILY_GOAL_MINUTES;
 
-  function readJSON(key, fallback) {
-    try {
-      var value = localStorage.getItem(key);
-      return value ? JSON.parse(value) : fallback;
-    } catch (_error) {
-      return fallback;
-    }
-  }
-
-  var user = readJSON(USER_STORAGE_KEY, {
+  var user = {
     name: "Usuário",
     email: "",
     createdAt: "—",
-  });
+  };
+
+  function currentInstant() {
+    return new Date(Date.now() + serverClockOffsetMs);
+  }
+
+  function todayDate() {
+    return parseDateKey(zonedDateKey(currentInstant()));
+  }
+
+  function sessionContext() {
+    return { version: sessionVersion, token: window.PontoPlusApi.accessToken() };
+  }
+
+  function isCurrentSession(context) {
+    return context.version === sessionVersion && Boolean(context.token) &&
+      context.token === window.PontoPlusApi.accessToken();
+  }
+
+  function resetSessionState() {
+    // Invalida também respostas pendentes, não apenas o conteúdo visível.
+    sessionVersion += 1;
+    stopTimers();
+    punches = [];
+    punchesByMonth = {};
+    loadingMonths = {};
+    monthRevisions = {};
+    notifications = [];
+    user = { name: "Usuário", email: "", createdAt: "—" };
+    dailyGoalMinutes = DEFAULT_DAILY_GOAL_MINUTES;
+    journeyRevision = -1;
+    journeyLoaded = false;
+    mutationPending = false;
+    undoExpiresAt = 0;
+    serverClockOffsetMs = 0;
+    lastServerTime = 0;
+    lastSyncAt = 0;
+    syncPromise = null;
+    dataMessage = "";
+    lastSummaryMinute = "";
+    preservedScrollY = null;
+    currentDayKey = zonedDateKey(currentInstant());
+    selectedDate = todayDate();
+    displayedMonth = todayDate();
+    historyRangeEnd = todayDate();
+    historyRangeStart = new Date(historyRangeEnd.getFullYear(), historyRangeEnd.getMonth(), historyRangeEnd.getDate() - 6);
+    historyDraftStart = new Date(historyRangeStart);
+    historyDraftEnd = new Date(historyRangeEnd);
+    historyPickerMonth = new Date(historyRangeEnd.getFullYear(), historyRangeEnd.getMonth(), 1);
+    activeToken = window.PontoPlusApi.accessToken();
+    localStorage.removeItem(USER_STORAGE_KEY);
+  }
+
+  function beginSession(apiUser) {
+    resetSessionState();
+    setCurrentUser(apiUser);
+  }
+
+  function signalDataChange() {
+    localStorage.setItem("ponto-plus-data-update", JSON.stringify({ userId: user.id, nonce: Date.now() + Math.random() }));
+  }
 
   function setCurrentUser(apiUser) {
     var createdDate = new Date(apiUser.created_at);
@@ -98,7 +157,8 @@
         ? "—"
         : new Intl.DateTimeFormat("pt-BR").format(createdDate),
     };
-    localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+    dailyGoalMinutes = Number.isInteger(apiUser.daily_goal_minutes) && apiUser.daily_goal_minutes >= 1 && apiUser.daily_goal_minutes <= 1439
+      ? apiUser.daily_goal_minutes : DEFAULT_DAILY_GOAL_MINUTES;
   }
 
   function normalizePunch(apiPunch) {
@@ -136,7 +196,7 @@
   }
 
   function syncTodayHistory() {
-    var todayKey = zonedDateKey(new Date());
+    var todayKey = zonedDateKey(currentInstant());
     var currentMonth = todayKey.slice(0, 7);
     if (!Object.prototype.hasOwnProperty.call(punchesByMonth, currentMonth)) {
       return;
@@ -151,10 +211,17 @@
       });
   }
 
-  function storeMonthResponse(response) {
-    punchesByMonth[response.month] = response.punches.map(normalizePunch);
-    if (response.today && response.today.date === zonedDateKey(new Date())) {
-      punches = response.today.punches.map(normalizePunch);
+  function storeTodayResponse(response) {
+    var serverTime = Date.parse(response.server_time);
+    if (Number.isFinite(serverTime) && serverTime >= lastServerTime) {
+      lastServerTime = serverTime;
+      serverClockOffsetMs = serverTime - Date.now();
+    }
+    var snapshot = response.today;
+    if (snapshot && snapshot.date === zonedDateKey(currentInstant()) && snapshot.revision >= journeyRevision) {
+      punches = snapshot.punches.map(normalizePunch);
+      journeyRevision = snapshot.revision;
+      journeyLoaded = true;
       var lastPunch = punches[punches.length - 1];
       undoExpiresAt = lastPunch
         ? Math.max(0, lastPunch.at.getTime() + UNDO_WINDOW_MS)
@@ -162,16 +229,26 @@
     }
   }
 
-  async function loadMonth(month) {
-    if (Object.prototype.hasOwnProperty.call(punchesByMonth, month)) return;
-    if (!loadingMonths[month]) {
-      loadingMonths[month] = window.PontoPlusApi.getPunches(month)
-        .then(storeMonthResponse)
-        .finally(function () {
-          delete loadingMonths[month];
-        });
+  function storeMonthResponse(response) {
+    var revision = response.today.revision;
+    if (revision >= (monthRevisions[response.month] === undefined ? -1 : monthRevisions[response.month])) {
+      punchesByMonth[response.month] = response.punches.map(normalizePunch);
+      monthRevisions[response.month] = revision;
     }
-    await loadingMonths[month];
+    storeTodayResponse(response);
+  }
+
+  async function loadMonth(month, force) {
+    if (!force && Object.prototype.hasOwnProperty.call(punchesByMonth, month)) return;
+    if (!force && loadingMonths[month]) return loadingMonths[month];
+    var context = sessionContext();
+    var pending = window.PontoPlusApi.getPunches(month).then(function (response) {
+      if (isCurrentSession(context)) storeMonthResponse(response);
+    }).finally(function () {
+      if (loadingMonths[month] === pending) delete loadingMonths[month];
+    });
+    loadingMonths[month] = pending;
+    return pending;
   }
 
   async function loadDateRange(startDate, endDate) {
@@ -182,13 +259,14 @@
       months.push(monthKey(cursor));
       cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
     }
-    await Promise.all(months.map(loadMonth));
+    await Promise.all(months.map(function (month) { return loadMonth(month); }));
   }
 
-  function handleApiError(error) {
+  function handleApiError(error, context) {
+    if (context && !isCurrentSession(context)) return false;
     if (error && error.status === 401) {
       window.PontoPlusApi.clearToken();
-      localStorage.removeItem(USER_STORAGE_KEY);
+      resetSessionState();
       announce("Sua sessão expirou. Entre novamente.");
       routeTo("#/login");
       return false;
@@ -200,14 +278,58 @@
   }
 
   async function loadInitialData() {
+    var context = sessionContext();
     try {
-      await loadDateRange(historyRangeStart, historyRangeEnd);
+      await Promise.all([loadDateRange(historyRangeStart, historyRangeEnd), loadMonth(currentDayKey.slice(0, 7))]);
+      if (!isCurrentSession(context)) return false;
       dataMessage = "";
       return true;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, context);
       return false;
     }
+  }
+
+  async function refreshSessionData() {
+    if (!isAuthenticated() || mutationPending) return;
+    if (syncPromise) return syncPromise;
+    var context = sessionContext();
+    var previous = JSON.stringify([punches, dailyGoalMinutes, user.name, dataMessage, journeyLoaded]);
+    var profileSnapshot = profileVersion;
+    lastSyncAt = Date.now();
+    var pending = (async function () {
+      try {
+        var results = await Promise.all([window.PontoPlusApi.getProfile(), loadMonth(zonedDateKey(currentInstant()).slice(0, 7), true)]);
+        if (!isCurrentSession(context)) return;
+        if (profileSnapshot === profileVersion) setCurrentUser(results[0].user);
+        dataMessage = "";
+        if (previous !== JSON.stringify([punches, dailyGoalMinutes, user.name, dataMessage, journeyLoaded]) && currentRoute() !== "#/perfil") {
+          refreshDashboardPreservingScroll();
+        }
+      } catch (error) {
+        if (handleApiError(error, context) && currentRoute() !== "#/perfil") refreshDashboardPreservingScroll();
+      } finally {
+        if (syncPromise === pending) syncPromise = null;
+      }
+    })();
+    syncPromise = pending;
+    return pending;
+  }
+
+  function checkSession() {
+    var token = window.PontoPlusApi.accessToken();
+    if (token !== activeToken) {
+      resetSessionState();
+      if (token) bootstrap();
+      else routeTo("#/login");
+      return false;
+    }
+    var expiresAt = window.PontoPlusApi.tokenExpiresAt();
+    if (token && expiresAt && Date.now() >= expiresAt) {
+      handleApiError({ status: 401 });
+      return false;
+    }
+    return Boolean(token);
   }
 
   function escapeHTML(value) {
@@ -259,7 +381,7 @@
         timeZone: TIME_ZONE,
         hour: "2-digit",
         hour12: false,
-      }).format(new Date()),
+      }).format(currentInstant()),
     );
     return hour >= 18 || hour < 6 ? "dark" : "light";
   }
@@ -322,12 +444,16 @@
     }).format(date);
   }
 
-  function formatLongDate(date) {
-    return new Intl.DateTimeFormat("pt-BR", {
+  function formatLongDate(date, calendarDate) {
+    // Datas do calendário não são instantes no fuso do computador.
+    if (calendarDate) date = new Date(formatDateKey(date) + "T12:00:00-03:00");
+    var text = new Intl.DateTimeFormat("pt-BR", {
+      timeZone: TIME_ZONE,
       weekday: "long",
       day: "numeric",
       month: "long",
     }).format(date);
+    return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
   function formatMonth(date) {
@@ -569,9 +695,7 @@
       "</div>" +
       '<div class="topbar-actions">' +
       themeToggleMarkup() +
-      '<button class="notification-button" type="button" data-action="notifications" aria-label="Abrir notificações">' +
-      '<span class="notification-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 2.2C9.92 1.44 10.83 0.95 12 0.95C13.17 0.95 14.08 1.44 14.5 2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><g transform="translate(0 1.4)"><path d="M18 8.75C18 5.44 15.31 2.75 12 2.75C8.69 2.75 6 5.44 6 8.75C6 12.15 5.45 14.1 4.52 15.55C4.04 16.3 4.58 17.25 5.47 17.25H18.53C19.42 17.25 19.96 16.3 19.48 15.55C18.55 14.1 18 12.15 18 8.75Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 20C9.92 20.76 10.83 21.25 12 21.25C13.17 21.25 14.08 20.76 14.5 20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g><circle cx="18.4" cy="5.4" r="3.6" fill="var(--primary)" stroke="var(--surface)" stroke-width="1.3"/></svg></span>' +
-      "</button>" +
+      notificationControlMarkup() +
       '<a class="profile-trigger" href="#/perfil" aria-label="Abrir meu perfil, status: ' +
       presence.label +
       '">' +
@@ -590,6 +714,7 @@
       "</a>" +
       "</div>" +
       "</header>" +
+      notificationPanelMarkup() +
       '<main id="main-content" class="content ' +
       (route === "#/dashboard" ? "is-dashboard" : "") +
       '" tabindex="-1">' +
@@ -598,6 +723,51 @@
       navMarkup(route, true) +
       "</div>" +
       "</div>"
+    );
+  }
+
+  function notificationControlMarkup() {
+    var unreadCount = notifications.filter(function (notification) {
+      return !notification.read;
+    }).length;
+    return (
+      '<div class="notification-control">' +
+      '<button class="notification-button" type="button" data-action="notifications" aria-label="Abrir notificações" aria-expanded="false" aria-controls="notification-panel">' +
+      '<span class="notification-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9.5 2.2C9.92 1.44 10.83 0.95 12 0.95C13.17 0.95 14.08 1.44 14.5 2.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><g transform="translate(0 1.4)"><path d="M18 8.75C18 5.44 15.31 2.75 12 2.75C8.69 2.75 6 5.44 6 8.75C6 12.15 5.45 14.1 4.52 15.55C4.04 16.3 4.58 17.25 5.47 17.25H18.53C19.42 17.25 19.96 16.3 19.48 15.55C18.55 14.1 18 12.15 18 8.75Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 20C9.92 20.76 10.83 21.25 12 21.25C13.17 21.25 14.08 20.76 14.5 20" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g></svg></span>' +
+      (unreadCount
+        ? '<span class="notification-badge" aria-hidden="true"></span><span class="sr-only">' +
+          unreadCount +
+          " nova" +
+          (unreadCount === 1 ? "" : "s") +
+          "</span>"
+        : "") +
+      "</button></div>"
+    );
+  }
+
+  function notificationPanelMarkup() {
+    var notificationItems = notifications.length
+      ? '<div class="notification-list">' +
+        notifications
+          .map(function (notification) {
+            return (
+              '<article class="notification-item ' +
+              (!notification.read ? "is-unread" : "") +
+              '"><strong>' +
+              escapeHTML(notification.title || "Notificação") +
+              '</strong><p>' +
+              escapeHTML(notification.message || "") +
+              "</p></article>"
+            );
+          })
+          .join("") +
+        "</div>"
+      : '<div class="notification-empty" role="status"><span class="notification-empty-icon" aria-hidden="true">✓</span><strong>Sem novas notificações</strong><p>Quando houver alguma novidade, ela aparecerá aqui.</p></div>';
+    return (
+      '<section class="notification-panel" id="notification-panel" aria-labelledby="notification-panel-title" hidden>' +
+      '<div class="notification-panel-header"><h2 id="notification-panel-title">Notificações</h2></div>' +
+      notificationItems +
+      "</section>"
     );
   }
 
@@ -795,7 +965,7 @@
     var index = punches.length;
     var canUndo =
       Boolean(undoExpiresAt) &&
-      Date.now() < undoExpiresAt &&
+      currentInstant().getTime() < undoExpiresAt &&
       punches.length > 0;
     var actionClass = canUndo ? "undo-journey-action" : "";
     var action = canUndo ? "undo-punch" : "register-punch";
@@ -803,7 +973,7 @@
       ? 'Desfazer ' +
         PUNCH_LABELS[index - 1].toLowerCase() +
         ' · <span id="undo-countdown">00:05</span>'
-      : escapeHTML(ACTION_LABELS[index]);
+      : !journeyLoaded ? "Atualizando jornada..." : escapeHTML(ACTION_LABELS[index]);
     return (
       '<section class="card priority-card journey-card combined-journey-card" aria-labelledby="journey-title">' +
       '<div class="card-header">' +
@@ -821,9 +991,11 @@
       '<svg class="gauge-svg" viewBox="0 24 220 118" aria-hidden="true">' +
       '<path class="gauge-track" pathLength="100" d="M 24 122 A 86 86 0 0 1 196 122"></path>' +
       '<path class="gauge-regular" id="gauge-regular" pathLength="100" d="M 24 122 A 86 86 0 0 1 196 122"></path>' +
-      '<path class="gauge-extra" id="gauge-extra" pathLength="100" d="M 196 122 A 86 86 0 0 0 24 122"></path>' +
+      '<path class="gauge-extra" id="gauge-extra" pathLength="100" d="M 24 122 A 86 86 0 0 1 196 122"></path>' +
+      '<circle class="gauge-goal-marker" id="gauge-goal-marker" cx="196" cy="122" r="3"></circle>' +
       "</svg>" +
       '<div class="gauge-value"><strong id="worked-time">00:00:00</strong><span>tempo trabalhado</span></div>' +
+      '<span class="gauge-goal-label" id="gauge-goal-label">Meta ' + goalShortLabel() + '</span>' +
       "</div>" +
       "</div>" +
       '<button class="primary-button journey-action ' +
@@ -831,7 +1003,7 @@
       '" id="punch-button" type="button" data-action="' +
       action +
       '" style="--undo-progress:0%" ' +
-      (!canUndo && index >= 4 ? "disabled" : "") +
+      (!journeyLoaded || mutationPending || (!canUndo && index >= 4) ? "disabled" : "") +
       '><span class="journey-action-label">' +
       actionLabel +
       "</span></button>" +
@@ -859,7 +1031,7 @@
           return '<button class="calendar-day is-outside" type="button" disabled aria-hidden="true"></button>';
         }
         var date = new Date(year, month, dayNumber);
-        var isToday = formatDateKey(date) === zonedDateKey(new Date());
+        var isToday = formatDateKey(date) === zonedDateKey(currentInstant());
         var isSelected = formatDateKey(date) === formatDateKey(selectedDate);
         var dayData = dayRecordData(date);
         var hasWork = dayData.worked;
@@ -921,9 +1093,9 @@
 
   function dayRecordData(date) {
     var dateKey = formatDateKey(date);
-    var todayKey = zonedDateKey(new Date());
+    var todayKey = zonedDateKey(currentInstant());
     if (dateKey === todayKey) {
-      var totalSeconds = punches.length ? getWorkedSeconds(new Date()) : 0;
+      var totalSeconds = punches.length ? getWorkedSeconds(currentInstant()) : 0;
       return {
         worked: punches.length > 0,
         times: PUNCH_LABELS.map(function (_label, index) {
@@ -934,6 +1106,7 @@
         complete: punches.length === 4,
         live: punches.length > 0 && punches.length < 4,
         absent: false,
+        incomplete: false,
       };
     }
     var records = punchesForDate(date);
@@ -952,12 +1125,14 @@
       minutes: Math.floor(totalSeconds / 60),
       complete: records.length === 4,
       live: false,
+      incomplete: records.length > 0 && records.length < 4,
     };
   }
 
   function dayStatus(data) {
     if (data.absent) return "Ausente";
     if (!data.worked) return "Sem registros";
+    if (data.incomplete) return "Jornada incompleta";
     if (data.live) return "Em andamento";
     if (data.totalSeconds > dailyGoalSeconds()) return "Hora extra";
     if (data.totalSeconds >= dailyGoalSeconds() * 0.99) return "Concluído";
@@ -967,6 +1142,7 @@
   function dayStatusClass(data) {
     if (data.absent) return "is-absent";
     if (!data.worked) return "is-empty";
+    if (data.incomplete) return "is-incomplete";
     if (data.live) return "is-live";
     if (data.totalSeconds > dailyGoalSeconds()) return "is-overtime";
     if (data.totalSeconds >= dailyGoalSeconds() * 0.99) {
@@ -976,6 +1152,7 @@
   }
 
   function dayGoalChipData(data) {
+    if (data.incomplete) return { label: "Jornada incompleta", value: "", overtime: "", statusClass: "is-incomplete" };
     var difference = data.totalSeconds - dailyGoalSeconds();
     var overtimeValue =
       difference > 0 ? "+" + secondsToClock(difference).slice(0, 5) : "";
@@ -1044,11 +1221,7 @@
         ? Math.max(0, 100 - regularProgressWidth)
         : 0;
     var goalChip = dayGoalChipData(data);
-    var dateLabel = new Intl.DateTimeFormat("pt-BR", {
-      weekday: "long",
-      day: "2-digit",
-      month: "long",
-    }).format(selectedDate);
+    var dateLabel = formatLongDate(selectedDate, true);
     var punchesMarkup = PUNCH_LABELS.map(function (label, index) {
       var recorded = data.times[index] !== "--:--";
       var nextRecorded =
@@ -1136,7 +1309,7 @@
           formatDateKey(item.date) === formatDateKey(selectedDate)
             ? "is-selected"
             : "",
-          formatDateKey(item.date) === zonedDateKey(new Date())
+          formatDateKey(item.date) === zonedDateKey(currentInstant())
             ? "is-today"
             : "",
         ]
@@ -1178,10 +1351,11 @@
       '<div class="card-header"><div><h3 id="selected-day-title">Detalhes do dia</h3><p class="selected-date-label">' +
       dateLabel +
       "</p></div></div>" +
+      (data.incomplete ? '<p class="incomplete-notice">Jornada incompleta: o total parcial considera apenas períodos com início e fim registrados. Não estimamos a saída nem calculamos um saldo definitivo.</p>' : "") +
       '<div class="selected-day-insights"><div class="day-punch-timeline-panel"><h4>Jornada registrada</h4>' +
       '<div class="day-punch-timeline">' +
       punchesMarkup +
-      '</div></div><div class="day-total-panel"><span>Total do dia</span><strong id="selected-day-total">' +
+      '</div></div><div class="day-total-panel"><span>' + (data.incomplete ? "Total parcial confirmado" : "Total do dia") + '</span><strong id="selected-day-total">' +
       secondsToClock(data.totalSeconds) +
       '</strong><div class="day-goal-progress" role="progressbar" aria-label="Progresso da meta diária" aria-valuemin="0" aria-valuemax="' +
       Math.max(100, Math.ceil(goalPercent)) +
@@ -1257,7 +1431,7 @@
       month: "long",
     });
     var days = [];
-    var referenceDate = new Date();
+    var referenceDate = todayDate();
     for (var offset = 6; offset >= 0; offset -= 1) {
       var date = new Date(
         referenceDate.getFullYear(),
@@ -1319,7 +1493,7 @@
 
   function historyPeriodSummary() {
     var rangeLength = historyRangeLength(historyRangeStart, historyRangeEnd);
-    var today = new Date();
+    var today = todayDate();
     var previousMonthStart = new Date(
       today.getFullYear(),
       today.getMonth() - 1,
@@ -1359,7 +1533,7 @@
 
   function historyPickerMonthOptionsMarkup() {
     var options = [];
-    var today = new Date();
+    var today = todayDate();
     for (var offset = 0; offset < 36; offset += 1) {
       var date = new Date(
         today.getFullYear(),
@@ -1400,7 +1574,7 @@
       ? formatDateKey(historyDraftStart)
       : "";
     var endKey = historyDraftEnd ? formatDateKey(historyDraftEnd) : "";
-    var todayKey = zonedDateKey(new Date());
+    var todayKey = zonedDateKey(currentInstant());
     var daysMarkup = cells
       .map(function (dayNumber, index) {
         if (!dayNumber) {
@@ -1433,7 +1607,7 @@
           '" type="button" data-action="select-history-date" data-date="' +
           dateKey +
           '" aria-label="' +
-          escapeHTML(formatLongDate(date)) +
+          escapeHTML(formatLongDate(date, true)) +
           '"' +
           (isFuture ? " disabled" : "") +
           '><span aria-hidden="true">' +
@@ -1443,8 +1617,8 @@
       })
       .join("");
     var currentMonth = new Date(
-      new Date().getFullYear(),
-      new Date().getMonth(),
+      todayDate().getFullYear(),
+      todayDate().getMonth(),
       1,
     );
     var isCurrentMonth =
@@ -1497,10 +1671,10 @@
       '<section class="weekly-total-card weekly-rhythm-card" aria-labelledby="weekly-total-title">' +
       '<div class="weekly-total-top"><h3 id="weekly-total-title">Seu ritmo nesta semana</h3>' +
       '<a href="#/historico">Ver histórico <span aria-hidden="true">↗</span></a></div>' +
-      '<div class="weekly-total-bottom"><strong>' +
+      '<div class="weekly-total-bottom"><strong id="weekly-worked-time">' +
       minutesLabel(totalMinutes) +
       '</strong><p>Total de horas<br />trabalhadas na semana</p></div>' +
-      '<div class="weekly-rhythm-progress"><span style="--week-progress:' +
+      '<div class="weekly-rhythm-progress"><span id="weekly-progress" style="--week-progress:' +
       Math.min(100, Math.round((totalMinutes / weeklyGoalMinutes) * 100)) +
       '%"></span></div><small>Meta semanal de ' +
       goalShortLabel(weeklyGoalMinutes) +
@@ -1519,7 +1693,7 @@
         var balanceSeconds =
           item.statusClass === "is-absent"
             ? -dailyGoalSeconds()
-            : item.statusClass !== "is-live" && item.totalSeconds
+            : item.statusClass !== "is-live" && item.statusClass !== "is-incomplete" && item.totalSeconds
               ? item.totalSeconds - dailyGoalSeconds()
               : null;
         var balanceClass =
@@ -1544,7 +1718,7 @@
         return (
           '<div class="payroll-row ' +
           (item.statusClass === "is-absent" ? "is-absent" : "") +
-          '" role="row">' +
+          '" role="row" data-date="' + formatDateKey(item.date) + '">' +
           '<div class="payroll-day" role="cell"><strong>' +
           item.shortLabel +
           '</strong><span>' +
@@ -1562,7 +1736,8 @@
             })
             .join("") +
           '<strong class="payroll-total" role="cell"><small class="mobile-column-label">Total</small>' +
-          (item.totalSeconds ? secondsToClock(item.totalSeconds).slice(0, 5) : "—") +
+          (item.totalSeconds || item.statusClass === "is-incomplete" ? secondsToClock(item.totalSeconds).slice(0, 5) : "—") +
+          (item.statusClass === "is-incomplete" ? '<span class="partial-total-label">parcial</span>' : "") +
           '</strong><strong class="payroll-balance ' +
           balanceClass +
           '" role="cell"><small class="mobile-column-label">Saldo</small>' +
@@ -1607,7 +1782,7 @@
     };
     var pageTitle = pageTitles[activeRoute] || "Minha jornada";
     document.title = APP_NAME + " | " + pageTitle;
-    var now = new Date();
+    var now = currentInstant();
     var firstName = user.name.trim().split(/\s+/)[0] || "você";
     var content =
       '<section class="greeting-panel" aria-labelledby="greeting-title">' +
@@ -1695,6 +1870,7 @@
       "</div>";
     app.innerHTML = authenticatedShell("#/perfil", "Configurações", content);
     bindProfileForm();
+    startTicking();
   }
 
   function render() {
@@ -1734,7 +1910,8 @@
     window.requestAnimationFrame(function () {
       var target = document.getElementById(targetId);
       if (!target) return;
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      target.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
       target.focus({ preventScroll: true });
     });
   }
@@ -1747,6 +1924,7 @@
   }
 
   function startTicking() {
+    if (tickTimer) window.clearInterval(tickTimer);
     tickTimer = window.setInterval(updateLiveData, 1000);
   }
 
@@ -1755,13 +1933,45 @@
   }
 
   function updateLiveData() {
-    var now = new Date();
+    if (!checkSession()) return;
+    var now = currentInstant();
+    var dayKey = zonedDateKey(now);
+    if (dayKey !== currentDayKey) {
+      var previousDay = currentDayKey;
+      currentDayKey = dayKey;
+      punches = [];
+      undoExpiresAt = 0;
+      journeyLoaded = false;
+      if (formatDateKey(selectedDate) === previousDay) {
+        selectedDate = todayDate();
+        displayedMonth = todayDate();
+      }
+      if (formatDateKey(historyRangeEnd) === previousDay) {
+        historyRangeEnd = todayDate();
+        historyRangeStart = new Date(historyRangeEnd.getFullYear(), historyRangeEnd.getMonth(), historyRangeEnd.getDate() - 6);
+      }
+      if (currentRoute() !== "#/perfil") refreshDashboardPreservingScroll();
+      refreshSessionData();
+      return;
+    }
     var liveClock = document.getElementById("live-clock");
     if (liveClock) {
       liveClock.textContent = formatTime(now);
       liveClock.setAttribute("datetime", now.toISOString());
     }
     updateGauge(now);
+    // A mudança acompanha o minuto trabalhado, não a virada do relógio.
+    var summaryMinute = Math.floor(getWorkedSeconds(now) / 60);
+    if (summaryMinute !== lastSummaryMinute) {
+      lastSummaryMinute = summaryMinute;
+      var minutes = weeklyHistoryData().reduce(function (sum, item) { return sum + item.minutes; }, 0);
+      setText("weekly-worked-time", minutesLabel(minutes));
+      var progress = document.getElementById("weekly-progress");
+      if (progress) progress.style.setProperty("--week-progress", Math.min(100, minutes / (dailyGoalMinutes * 5) * 100) + "%");
+      var row = document.querySelector('.payroll-row[data-date="' + dayKey + '"] .payroll-total');
+      if (row && punches.length) row.innerHTML = '<small class="mobile-column-label">Total</small>' + secondsToClock(getWorkedSeconds(now)).slice(0, 5);
+    }
+    if (Date.now() - lastSyncAt >= 15000) refreshSessionData();
   }
 
   function updateGauge(now) {
@@ -1769,11 +1979,9 @@
     var goalSeconds = dailyGoalSeconds();
     var overtime = Math.max(0, total - goalSeconds);
     var regular = Math.min(total, goalSeconds);
-    var regularPercent = (regular / goalSeconds) * 100;
-    var extraPercent = Math.min(
-      100,
-      (overtime / goalSeconds) * 100,
-    );
+    var scale = Math.max(goalSeconds, total);
+    var regularPercent = (regular / scale) * 100;
+    var extraPercent = (overtime / scale) * 100;
 
     var regularPath = document.getElementById("gauge-regular");
     var extraPath = document.getElementById("gauge-extra");
@@ -1784,10 +1992,17 @@
     }
     if (extraPath) {
       extraPath.style.strokeDasharray = extraPercent + " 101";
-      extraPath.style.strokeDashoffset = "0";
+      extraPath.style.strokeDashoffset = String(-regularPercent);
       extraPath.style.opacity = extraPercent > 0 ? "1" : "0";
     }
 
+    var marker = document.getElementById("gauge-goal-marker");
+    if (marker) {
+      var angle = Math.PI * (1 - goalSeconds / scale);
+      marker.setAttribute("cx", 110 + 86 * Math.cos(angle));
+      marker.setAttribute("cy", 122 - 86 * Math.sin(angle));
+    }
+    setText("gauge-goal-label", "Meta " + goalShortLabel());
     setText("worked-time", secondsToClock(total));
     if (formatDateKey(selectedDate) === zonedDateKey(now) && punches.length) {
       setText("selected-day-total", secondsToClock(total));
@@ -1898,13 +2113,13 @@
   }
 
   function startUndoCountdown() {
-    if (!undoExpiresAt || Date.now() >= undoExpiresAt) return;
+    if (!undoExpiresAt || currentInstant().getTime() >= undoExpiresAt) return;
     updateUndoCountdown();
     undoTimer = window.setInterval(updateUndoCountdown, 100);
   }
 
   function updateUndoCountdown() {
-    var remaining = Math.max(0, undoExpiresAt - Date.now());
+    var remaining = Math.max(0, undoExpiresAt - currentInstant().getTime());
     var countdown = document.getElementById("undo-countdown");
     var button = document.getElementById("punch-button");
     var elapsedPercent =
@@ -1924,7 +2139,7 @@
         button.classList.remove("undo-journey-action");
         button.dataset.action = "register-punch";
         button.style.removeProperty("--undo-progress");
-        button.disabled = punches.length >= 4;
+        button.disabled = !journeyLoaded || mutationPending || punches.length >= 4;
         button.innerHTML =
           '<span class="journey-action-label">' +
           escapeHTML(ACTION_LABELS[punches.length]) +
@@ -1934,61 +2149,98 @@
   }
 
   function refreshDashboardPreservingScroll() {
+    if (!isAuthenticated() || currentRoute() === "#/login" || currentRoute() === "#/cadastro" || currentRoute() === "#/perfil") return;
     var scrollY = window.scrollY;
+    var focused = document.activeElement;
+    var focusId = focused && focused.id;
+    var focusAction = focused && focused.dataset && focused.dataset.action;
+    var focusDate = focused && focused.dataset && focused.dataset.date;
     stopTimers();
+    lastSummaryMinute = "";
     renderDashboard(currentRoute());
     window.requestAnimationFrame(function () {
       window.scrollTo({ top: scrollY, left: 0, behavior: "auto" });
+      var target = focusId ? document.getElementById(focusId) : null;
+      if (!target && focusAction && /^[a-z-]+$/.test(focusAction)) {
+        var selector = '[data-action="' + focusAction + '"]';
+        if (focusDate && /^\d{4}-\d{2}-\d{2}$/.test(focusDate)) selector += '[data-date="' + focusDate + '"]';
+        target = document.querySelector(selector);
+      }
+      if (target && !target.disabled) target.focus({ preventScroll: true });
     });
   }
 
   async function registerPunch() {
+    if (!checkSession() || mutationPending || !journeyLoaded) return;
     if (punches.length >= 4) {
       announce("Sua jornada de hoje já foi encerrada.");
       return;
     }
     var button = document.getElementById("punch-button");
+    var context = sessionContext();
+    mutationPending = true;
     if (button) {
       button.disabled = true;
       button.textContent = "Registrando...";
     }
     try {
-      var response = await window.PontoPlusApi.createPunch();
-      var punch = normalizePunch(response.punch);
-      punches.push(punch);
+      var response = await window.PontoPlusApi.createPunch(journeyRevision, currentDayKey);
+      if (!isCurrentSession(context)) return;
+      storeTodayResponse(response);
       syncTodayHistory();
-      undoExpiresAt = punch.at.getTime() + UNDO_WINDOW_MS;
+      monthRevisions[currentDayKey.slice(0, 7)] = journeyRevision;
       dataMessage = "";
       announce(
-        PUNCH_LABELS[punches.length - 1] +
+        PUNCH_LABELS[PUNCH_TYPES.indexOf(response.punch.type)] +
           " registrada às " +
-          formatShortTime(punch.at) +
+          formatShortTime(new Date(response.punch.occurred_at)) +
           ".",
       );
-      refreshDashboardPreservingScroll();
+      signalDataChange();
     } catch (error) {
-      if (handleApiError(error)) refreshDashboardPreservingScroll();
+      if (handleApiError(error, context)) {
+        try { await loadMonth(zonedDateKey(currentInstant()).slice(0, 7), true); }
+        catch (refreshError) { handleApiError(refreshError, context); }
+      }
+    } finally {
+      if (isCurrentSession(context)) {
+        mutationPending = false;
+        refreshDashboardPreservingScroll();
+      }
     }
   }
 
   async function undoPunch() {
-    if (!punches.length || Date.now() >= undoExpiresAt) return;
+    if (!checkSession() || mutationPending || !punches.length || currentInstant().getTime() >= undoExpiresAt) return;
+    var context = sessionContext();
+    mutationPending = true;
     var lastPunch = punches[punches.length - 1];
     var button = document.getElementById("punch-button");
     if (button) button.disabled = true;
     try {
-      await window.PontoPlusApi.deletePunch(lastPunch.id);
-      punches.pop();
-      syncTodayHistory();
+      await window.PontoPlusApi.deletePunch(lastPunch.id, journeyRevision);
+      if (!isCurrentSession(context)) return;
+      journeyLoaded = false;
+      await loadMonth(zonedDateKey(currentInstant()).slice(0, 7), true);
+      if (!isCurrentSession(context)) return;
       undoExpiresAt = 0;
       dataMessage = "";
       announce("A última batida foi desfeita.");
-      refreshDashboardPreservingScroll();
+      signalDataChange();
     } catch (error) {
+      if (!isCurrentSession(context)) return;
       if (error && error.code === "undo_window_expired") {
         undoExpiresAt = 0;
       }
-      if (handleApiError(error)) refreshDashboardPreservingScroll();
+      if (handleApiError(error, context)) {
+        try { await loadMonth(zonedDateKey(currentInstant()).slice(0, 7), true); }
+        catch (refreshError) { handleApiError(refreshError, context); }
+      }
+    } finally {
+      if (isCurrentSession(context)) {
+        mutationPending = false;
+        refreshDashboardPreservingScroll();
+      }
     }
   }
 
@@ -2004,19 +2256,56 @@
     announce("Tema " + (next === "dark" ? "escuro" : "claro") + " ativado.");
   }
 
+  function setNotificationsPanel(open) {
+    var button = document.querySelector('[data-action="notifications"]');
+    var panel = document.getElementById("notification-panel");
+    if (!button || !panel) return;
+    if (open) positionNotificationsPanel();
+    button.setAttribute("aria-expanded", open ? "true" : "false");
+    button.setAttribute(
+      "aria-label",
+      open ? "Fechar notificações" : "Abrir notificações",
+    );
+    panel.hidden = !open;
+    if (open && !notifications.length) {
+      announce("Sem novas notificações.");
+    }
+  }
+
+  function positionNotificationsPanel() {
+    var button = document.querySelector('[data-action="notifications"]');
+    var profile = document.querySelector(".profile-trigger");
+    var panel = document.getElementById("notification-panel");
+    if (!button || !profile || !panel) return;
+    var buttonBox = button.getBoundingClientRect();
+    var profileBox = profile.getBoundingClientRect();
+    var viewportWidth = window.innerWidth;
+    var mobileMargin = viewportWidth <= 640 ? 16 : 20;
+    panel.style.top =
+      buttonBox.bottom + (viewportWidth <= 900 ? 8 : 12) + "px";
+    panel.style.left =
+      (viewportWidth <= 900 ? mobileMargin : buttonBox.left) + "px";
+    panel.style.right =
+      (viewportWidth <= 900
+        ? mobileMargin
+        : Math.max(0, viewportWidth - profileBox.right)) + "px";
+    panel.style.maxHeight = Math.max(80, window.innerHeight - buttonBox.bottom - 28) + "px";
+  }
+
+  function toggleNotificationsPanel() {
+    var button = document.querySelector('[data-action="notifications"]');
+    if (!button) return;
+    setNotificationsPanel(button.getAttribute("aria-expanded") !== "true");
+  }
+
   function logout() {
     window.PontoPlusApi.clearToken();
-    localStorage.removeItem(USER_STORAGE_KEY);
+    resetSessionState();
     // Remove chaves da fase de protótipo para não manter uma sessão simulada.
     localStorage.removeItem("ponto-plus-demo-auth");
     sessionStorage.removeItem("ponto-plus-demo-auth");
     localStorage.removeItem("ponto-plus-demo-user");
     sessionAppTheme = null;
-    punches = [];
-    punchesByMonth = {};
-    loadingMonths = {};
-    dataMessage = "";
-    undoExpiresAt = 0;
     announce("Sessão encerrada.");
     routeTo("#/login");
   }
@@ -2067,7 +2356,7 @@
   }
 
   function validateEmail(value) {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    return value.length <= 255 && /^[^\s@]+@[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(value);
   }
 
   function showFormMessage(id, message) {
@@ -2114,25 +2403,29 @@
       }
       showFormMessage("login-message", "");
       var remember = form.elements.remember.checked;
+      var attempt = sessionVersion;
       setFormLoading(form, true, "Entrando...");
       try {
         var response = await window.PontoPlusApi.login({
           email: email.value.trim().toLowerCase(),
           password: password.value,
         });
+        if (attempt !== sessionVersion || currentRoute() !== "#/login") return;
         window.PontoPlusApi.saveToken(response.token, remember);
-        setCurrentUser(response.user);
+        beginSession(response.user);
+        var context = sessionContext();
         if (remember) {
           localStorage.setItem("ponto-plus-remember-email", user.email);
         } else {
           localStorage.removeItem("ponto-plus-remember-email");
         }
         await loadInitialData();
-        if (!isAuthenticated()) return;
+        if (!isCurrentSession(context)) return;
         sessionAppTheme = timeBasedTheme();
         announce("Login realizado com sucesso.");
         routeTo("#/dashboard");
       } catch (error) {
+        if (attempt !== sessionVersion) return;
         showFormMessage(
           "login-message",
           error.message || "Não foi possível entrar.",
@@ -2178,13 +2471,13 @@
       var name = form.elements.name;
       var email = form.elements.email;
       var password = form.elements.password;
-      var nameError = name.value.trim().length < 2 ? "Informe seu nome." : "";
+      var nameError = name.value.trim().length < 2 || name.value.trim().length > 120 ? "Informe um nome entre 2 e 120 caracteres." : "";
       var emailError = !email.value.trim()
         ? "Informe seu e-mail."
         : !validateEmail(email.value.trim())
           ? "Digite um e-mail válido."
           : "";
-      var passwordError = password.value.length < 6 ? "Use pelo menos 6 caracteres." : "";
+      var passwordError = password.value.length < 6 || password.value.length > 256 || !password.value.trim() ? "Use entre 6 e 256 caracteres." : "";
       setFieldError(name, nameError);
       setFieldError(email, emailError);
       setFieldError(password, passwordError);
@@ -2193,6 +2486,7 @@
         return;
       }
       showFormMessage("register-message", "");
+      var attempt = sessionVersion;
       setFormLoading(form, true, "Criando conta...");
       try {
         var response = await window.PontoPlusApi.register({
@@ -2200,14 +2494,17 @@
           email: email.value.trim().toLowerCase(),
           password: password.value,
         });
+        if (attempt !== sessionVersion || currentRoute() !== "#/cadastro") return;
         window.PontoPlusApi.saveToken(response.token, false);
-        setCurrentUser(response.user);
+        beginSession(response.user);
+        var context = sessionContext();
         await loadInitialData();
-        if (!isAuthenticated()) return;
+        if (!isCurrentSession(context)) return;
         sessionAppTheme = timeBasedTheme();
         announce("Conta criada com sucesso.");
         routeTo("#/dashboard");
       } catch (error) {
+        if (attempt !== sessionVersion) return;
         showFormMessage(
           "register-message",
           error.message || "Não foi possível criar a conta.",
@@ -2230,7 +2527,7 @@
         goalParts.length === 2 && goalParts.every(Number.isFinite)
           ? goalParts[0] * 60 + goalParts[1]
           : 0;
-      var nameError = name.value.trim().length < 2 ? "Informe seu nome." : "";
+      var nameError = name.value.trim().length < 2 || name.value.trim().length > 120 ? "Informe um nome entre 2 e 120 caracteres." : "";
       var goalError =
         parsedGoalMinutes < 1 || parsedGoalMinutes > 1439
           ? "Informe uma meta entre 00:01 e 23:59."
@@ -2242,25 +2539,25 @@
         return;
       }
       showFormMessage("profile-message", "");
+      var context = sessionContext();
       setFormLoading(form, true, "Salvando...");
       try {
         var response = await window.PontoPlusApi.updateProfile(
           name.value.trim(),
+          parsedGoalMinutes,
         );
+        if (!isCurrentSession(context)) return;
         setCurrentUser(response.user);
-        dailyGoalMinutes = parsedGoalMinutes;
-        localStorage.setItem(
-          "ponto-plus-daily-goal-minutes",
-          String(dailyGoalMinutes),
-        );
+        profileVersion += 1;
+        signalDataChange();
         var banner = document.getElementById("profile-success");
         if (banner) banner.classList.add("is-visible");
         announce("Configurações atualizadas com sucesso.");
         window.setTimeout(function () {
-          if (currentRoute() === "#/perfil") renderProfile();
+          if (isCurrentSession(context) && currentRoute() === "#/perfil") render();
         }, 900);
       } catch (error) {
-        if (handleApiError(error)) {
+        if (handleApiError(error, context)) {
           showFormMessage(
             "profile-message",
             error.message || "Não foi possível salvar as configurações.",
@@ -2273,6 +2570,7 @@
   }
 
   async function selectDate(value) {
+    var context = sessionContext();
     var parts = value.split("-").map(Number);
     preservedScrollY = window.scrollY;
     selectedDate = new Date(parts[0], parts[1] - 1, parts[2]);
@@ -2282,14 +2580,16 @@
         new Date(parts[0], parts[1] - 1, parts[2] - 3),
         new Date(parts[0], parts[1] - 1, parts[2] + 3),
       );
+      if (!isCurrentSession(context)) return;
       dataMessage = "";
     } catch (error) {
-      if (!handleApiError(error)) return;
+      if (!handleApiError(error, context)) return;
     }
     render();
   }
 
   async function changeMonth(delta) {
+    var context = sessionContext();
     preservedScrollY = window.scrollY;
     displayedMonth = new Date(displayedMonth.getFullYear(), displayedMonth.getMonth() + delta, 1);
     selectedDate = new Date(displayedMonth.getFullYear(), displayedMonth.getMonth(), 1);
@@ -2298,9 +2598,10 @@
         new Date(selectedDate.getFullYear(), selectedDate.getMonth(), -2),
         new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 4),
       );
+      if (!isCurrentSession(context)) return;
       dataMessage = "";
     } catch (error) {
-      if (!handleApiError(error)) return;
+      if (!handleApiError(error, context)) return;
     }
     render();
   }
@@ -2337,6 +2638,7 @@
   }
 
   async function applyHistoryRange() {
+    var context = sessionContext();
     if (!historyDraftStart || !historyDraftEnd) {
       showHistoryRangeError("Escolha as datas inicial e final.");
       return;
@@ -2354,9 +2656,10 @@
     preservedScrollY = window.scrollY;
     try {
       await loadDateRange(historyRangeStart, historyRangeEnd);
+      if (!isCurrentSession(context)) return;
       dataMessage = "";
     } catch (error) {
-      if (!handleApiError(error)) return;
+      if (!handleApiError(error, context)) return;
     }
     announce(
       "Histórico atualizado para um período de " +
@@ -2402,8 +2705,8 @@
       1,
     );
     var currentMonth = new Date(
-      new Date().getFullYear(),
-      new Date().getMonth(),
+      todayDate().getFullYear(),
+      todayDate().getMonth(),
       1,
     );
     var earliestMonth = new Date(
@@ -2424,7 +2727,8 @@
   }
 
   async function resetHistoryToLastSevenDays() {
-    historyDraftEnd = new Date();
+    var context = sessionContext();
+    historyDraftEnd = todayDate();
     historyDraftStart = new Date(
       historyDraftEnd.getFullYear(),
       historyDraftEnd.getMonth(),
@@ -2440,23 +2744,33 @@
     preservedScrollY = window.scrollY;
     try {
       await loadDateRange(historyRangeStart, historyRangeEnd);
+      if (!isCurrentSession(context)) return;
       dataMessage = "";
     } catch (error) {
-      if (!handleApiError(error)) return;
+      if (!handleApiError(error, context)) return;
     }
     announce("Histórico atualizado para os últimos sete dias.");
     render();
   }
 
   document.addEventListener("click", function (event) {
+    if (event.target.closest(".skip-link")) {
+      event.preventDefault();
+      var content = document.getElementById("main-content");
+      if (content) content.focus();
+      return;
+    }
     var isInsideHistoryRange = Boolean(
       event.target.closest(".history-range-control"),
+    );
+    var isInsideNotifications = Boolean(
+      event.target.closest(".notification-control, .notification-panel"),
     );
     var control = event.target.closest("[data-action]");
     if (control) {
       var action = control.dataset.action;
       if (action === "toggle-theme") toggleTheme();
-      if (action === "notifications") announce("Você não tem novas notificações.");
+      if (action === "notifications") toggleNotificationsPanel();
       if (action === "logout") logout();
       if (action === "forgot-password") openForgotPassword();
       if (action === "close-forgot") closeForgotPassword();
@@ -2486,6 +2800,16 @@
     if (!isInsideHistoryRange) {
       setHistoryRangePanel(false);
     }
+    if (!isInsideNotifications) {
+      setNotificationsPanel(false);
+    }
+  });
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      setNotificationsPanel(false);
+      setHistoryRangePanel(false);
+    }
   });
 
   document.addEventListener("change", function (event) {
@@ -2496,23 +2820,45 @@
 
   window.addEventListener("hashchange", render);
   window.addEventListener("beforeunload", stopTimers);
+  window.addEventListener("storage", function (event) {
+    if (checkSession() && event.key === "ponto-plus-data-update") refreshSessionData();
+  });
+  window.addEventListener("focus", function () {
+    if (checkSession()) refreshSessionData();
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && checkSession()) refreshSessionData();
+  });
+  window.addEventListener("resize", function () {
+    var button = document.querySelector('[data-action="notifications"]');
+    if (button && button.getAttribute("aria-expanded") === "true") {
+      positionNotificationsPanel();
+    }
+  });
 
   async function bootstrap() {
-    // Uma sessão persistida só é aceita depois de ser validada pela API.
+    resetSessionState();
+    var context = sessionContext();
+    // O health check também torna a rota de disponibilidade útil para a interface.
     if (isAuthenticated()) {
+      app.innerHTML = '<main id="main-content" class="loading-screen" tabindex="-1" role="status">Carregando sua jornada…</main>';
       try {
+        await window.PontoPlusApi.getHealth();
+        if (!isCurrentSession(context)) return;
         var response = await window.PontoPlusApi.getProfile();
+        if (!isCurrentSession(context)) return;
         setCurrentUser(response.user);
         await loadInitialData();
       } catch (error) {
-        handleApiError(error);
-        if (!isAuthenticated()) {
-          localStorage.removeItem(USER_STORAGE_KEY);
-          if (currentRoute() !== "#/login" && currentRoute() !== "#/cadastro") {
-            window.location.hash = "#/login";
-          }
-        }
+        if (!handleApiError(error, context)) return;
       }
+      if (!isCurrentSession(context)) return;
+    } else {
+      window.PontoPlusApi.getHealth().catch(function (error) {
+        if (context.version === sessionVersion && !isAuthenticated()) {
+          showFormMessage("login-message", error.message);
+        }
+      });
     }
     render();
   }
