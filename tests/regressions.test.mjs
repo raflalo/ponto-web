@@ -83,7 +83,7 @@ test("health, meta, revisão e data usam o contrato completo da API", async () =
   await window.PontoPlusApi.updateProfile("Ana", 390);
   await window.PontoPlusApi.createPunch(3, "2026-09-15");
   await window.PontoPlusApi.deletePunch(7, 4);
-  assert.equal(calls[0].url, "http://127.0.0.1:5000/api/health");
+  assert.equal(calls[0].url, "http://127.0.0.1:5001/api/health");
   assert.deepEqual(JSON.parse(calls[1].options.body), { name: "Ana", daily_goal_minutes: 390 });
   assert.deepEqual(JSON.parse(calls[2].options.body), { expected_revision: 3, expected_date: "2026-09-15" });
   assert.match(calls[3].url, /\/7\?expected_revision=4$/);

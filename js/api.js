@@ -6,7 +6,7 @@
 (function () {
   "use strict";
 
-  var API_BASE_URL = "http://127.0.0.1:5000/api";
+  var API_BASE_URL = "http://127.0.0.1:5001/api";
   var TOKEN_KEY = "ponto-plus-access-token";
 
   function accessToken() {

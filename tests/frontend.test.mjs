@@ -114,14 +114,14 @@ test("cliente HTTP usa todas as rotas, métodos e formas de sessão", async () =
   assert.deepEqual(
     requests.map(({ url, options }) => [url, options.method]),
     [
-      ["http://127.0.0.1:5000/api/auth/register", "POST"],
-      ["http://127.0.0.1:5000/api/auth/login", "POST"],
-      ["http://127.0.0.1:5000/api/health", "GET"],
-      ["http://127.0.0.1:5000/api/profile", "GET"],
-      ["http://127.0.0.1:5000/api/profile", "PATCH"],
-      ["http://127.0.0.1:5000/api/punches?month=2026-09", "GET"],
-      ["http://127.0.0.1:5000/api/punches", "POST"],
-      ["http://127.0.0.1:5000/api/punches/42", "DELETE"],
+      ["http://127.0.0.1:5001/api/auth/register", "POST"],
+      ["http://127.0.0.1:5001/api/auth/login", "POST"],
+      ["http://127.0.0.1:5001/api/health", "GET"],
+      ["http://127.0.0.1:5001/api/profile", "GET"],
+      ["http://127.0.0.1:5001/api/profile", "PATCH"],
+      ["http://127.0.0.1:5001/api/punches?month=2026-09", "GET"],
+      ["http://127.0.0.1:5001/api/punches", "POST"],
+      ["http://127.0.0.1:5001/api/punches/42", "DELETE"],
     ],
   );
   assert.ok(requests.every(({ options }) => options.headers.Authorization === "Bearer token-local"));

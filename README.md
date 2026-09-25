@@ -39,7 +39,7 @@ Código/identificadores estão em inglês; interface, comentários e documentaç
 ## Como abrir
 
 1. Instale as dependências e inicie `ponto-api` seguindo o README daquele repositório.
-2. Confirme `http://127.0.0.1:5000/api/health`.
+2. Confirme `http://127.0.0.1:5001/api/health`.
 3. Abra o `index.html` desta pasta diretamente no Chrome ou Firefox.
 4. Cadastre uma conta ou entre com uma conta existente.
 
@@ -136,7 +136,7 @@ Os testes usam DOM, relógio e API simulados, sem navegador e sem modificar dado
 
 ## Problemas comuns
 
-- **Falha de conexão/timeout:** confirme que a API está ativa na porta 5000. O cliente limita a espera a dez segundos.
+- **Falha de conexão/timeout:** confirme que a API está ativa na porta 5001. O cliente limita a espera a dez segundos.
 - **Sessão expirada:** faça login novamente; histórico e meta estão no banco.
 - **Jornada atualizada em outra aba:** confira os registros recarregados e só então clique na ação desejada.
 - **Jornada incompleta:** falta uma ou mais batidas em um dia anterior. O parcial não é o total definitivo; não existe edição retroativa neste escopo.
