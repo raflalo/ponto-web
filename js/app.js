@@ -1,5 +1,17 @@
+/*
+ * Controlador principal da interface do Ponto+.
+ *
+ * O arquivo está organizado na mesma ordem em que a aplicação funciona:
+ * configuração e estado, sessão e sincronização, utilitários, componentes,
+ * telas, atualizações em tempo real, ações do usuário e inicialização.
+ * A função externa evita que variáveis internas sejam expostas no objeto global.
+ */
 (function () {
   "use strict";
+
+  // ---------------------------------------------------------------------------
+  // Configuração e estado da aplicação
+  // ---------------------------------------------------------------------------
 
   var APP_NAME = "Ponto+";
   var USER_STORAGE_KEY = "ponto-plus-user";
@@ -86,6 +98,10 @@
     email: "",
     createdAt: "—",
   };
+
+  // ---------------------------------------------------------------------------
+  // Sessão, relógio do servidor e sincronização dos dados
+  // ---------------------------------------------------------------------------
 
   function currentInstant() {
     return new Date(Date.now() + serverClockOffsetMs);
@@ -316,6 +332,7 @@
     return pending;
   }
 
+  // Confere mudanças de sessão entre abas e impede o uso de tokens expirados.
   function checkSession() {
     var token = window.PontoPlusApi.accessToken();
     if (token !== activeToken) {
@@ -331,6 +348,10 @@
     }
     return Boolean(token);
   }
+
+  // ---------------------------------------------------------------------------
+  // Utilitários de segurança, acessibilidade, tema e navegação
+  // ---------------------------------------------------------------------------
 
   function escapeHTML(value) {
     return String(value)
@@ -424,6 +445,10 @@
     }
     return true;
   }
+
+  // ---------------------------------------------------------------------------
+  // Formatação de datas, horários e cálculos da jornada
+  // ---------------------------------------------------------------------------
 
   function formatTime(date) {
     return new Intl.DateTimeFormat("pt-BR", {
@@ -574,6 +599,10 @@
     }
     return { className: "is-finished", label: "Indisponível" };
   }
+
+  // ---------------------------------------------------------------------------
+  // Componentes HTML compartilhados entre as telas
+  // ---------------------------------------------------------------------------
 
   function themeToggleMarkup(extraClass) {
     var theme = document.documentElement.dataset.theme;
@@ -771,6 +800,10 @@
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Telas públicas de autenticação
+  // ---------------------------------------------------------------------------
+
   function authAsideMarkup(mode) {
     var isRegister = mode === "register";
     return (
@@ -929,6 +962,10 @@
     bindRegisterForm();
     startAuthThemeClock();
   }
+
+  // ---------------------------------------------------------------------------
+  // Componentes da jornada, do calendário e dos detalhes do dia
+  // ---------------------------------------------------------------------------
 
   function timelineMarkup() {
     var mobileProgress = punches.length === 0 ? 0 : Math.min(100, (punches.length / 3) * 100);
@@ -1388,6 +1425,10 @@
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Dados comparativos e componentes do histórico
+  // ---------------------------------------------------------------------------
+
   // A janela móvel mantém o dia escolhido na quarta posição do gráfico.
   function centeredComparisonData(centerDate) {
     var shortFormatter = new Intl.DateTimeFormat("pt-BR", {
@@ -1772,6 +1813,10 @@
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Montagem das telas autenticadas e roteamento visual
+  // ---------------------------------------------------------------------------
+
   function renderDashboard(route) {
     restoreAppTheme();
     var activeRoute = route || "#/dashboard";
@@ -1915,6 +1960,10 @@
       target.focus({ preventScroll: true });
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // Atualizações em tempo real, cronômetros e indicadores de progresso
+  // ---------------------------------------------------------------------------
 
   function stopTimers() {
     if (tickTimer) window.clearInterval(tickTimer);
@@ -2148,6 +2197,10 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Ações da jornada e controles gerais da interface
+  // ---------------------------------------------------------------------------
+
   function refreshDashboardPreservingScroll() {
     if (!isAuthenticated() || currentRoute() === "#/login" || currentRoute() === "#/cadastro" || currentRoute() === "#/perfil") return;
     var scrollY = window.scrollY;
@@ -2313,6 +2366,10 @@
     announce("Sessão encerrada.");
     routeTo("#/login");
   }
+
+  // ---------------------------------------------------------------------------
+  // Formulários, validação e recuperação de senha simulada
+  // ---------------------------------------------------------------------------
 
   function openForgotPassword() {
     var dialog = document.getElementById("forgot-dialog");
@@ -2573,6 +2630,10 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Seleção de datas e filtros do histórico
+  // ---------------------------------------------------------------------------
+
   async function selectDate(value) {
     var context = sessionContext();
     var parts = value.split("-").map(Number);
@@ -2757,6 +2818,10 @@
     render();
   }
 
+  // ---------------------------------------------------------------------------
+  // Eventos globais: ações declaradas no HTML, teclado e sincronização entre abas
+  // ---------------------------------------------------------------------------
+
   document.addEventListener("click", function (event) {
     if (event.target.closest(".skip-link")) {
       event.preventDefault();
@@ -2839,6 +2904,10 @@
       positionNotificationsPanel();
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // Inicialização da aplicação
+  // ---------------------------------------------------------------------------
 
   async function bootstrap() {
     resetSessionState();

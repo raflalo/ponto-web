@@ -1,3 +1,12 @@
+/*
+ * Folha de estilos principal do Ponto+.
+ *
+ * Ordem das seções: fontes e temas, base acessível, estrutura da aplicação,
+ * jornada, calendário, histórico, autenticação, perfil e responsividade.
+ */
+
+/* Fontes locais ------------------------------------------------------------ */
+
 @font-face {
   font-family: "Manrope";
   src: url("../assets/fonts/Manrope-Regular.ttf") format("truetype");
@@ -29,6 +38,8 @@
   font-style: normal;
   font-display: swap;
 }
+
+/* Cores, medidas e temas --------------------------------------------------- */
 
 :root {
   color-scheme: light;
@@ -119,6 +130,8 @@
   --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.28);
   --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.36);
 }
+
+/* Base visual e recursos de acessibilidade -------------------------------- */
 
 * {
   box-sizing: border-box;
@@ -242,6 +255,8 @@ img {
   background: var(--danger-bg);
   color: var(--danger);
 }
+
+/* Estrutura autenticada, menu lateral e barra superior -------------------- */
 
 .app-shell {
   display: grid;
@@ -859,6 +874,8 @@ img {
   padding-top: 24px;
 }
 
+/* Painel principal e controle da jornada --------------------------------- */
+
 .greeting-panel {
   display: grid;
   margin-bottom: 24px;
@@ -1413,6 +1430,8 @@ img {
   padding-bottom: 28px;
 }
 
+/* Calendário mensal -------------------------------------------------------- */
+
 .month-controls {
   display: flex;
   align-items: center;
@@ -1531,6 +1550,8 @@ img {
   font-weight: 700;
   box-shadow: none;
 }
+
+/* Seletor de período do histórico ----------------------------------------- */
 
 .history-range-control {
   position: relative;
@@ -1822,6 +1843,8 @@ img {
   border-radius: 999px;
   font-size: 10px;
 }
+
+/* Detalhes e saldo do dia selecionado ------------------------------------- */
 
 .selected-day-card {
   align-self: start;
@@ -2156,6 +2179,8 @@ img {
   }
 }
 
+/* Comparativo semanal e folha de frequência ------------------------------- */
+
 .day-week-comparison {
   display: grid;
   margin-top: 16px;
@@ -2482,6 +2507,8 @@ img {
   display: none;
 }
 
+/* Resumos e lista do histórico -------------------------------------------- */
+
 .weekly-total-card {
   display: grid;
   min-height: 210px;
@@ -2660,6 +2687,8 @@ img {
   margin-bottom: 6px;
   color: var(--text);
 }
+
+/* Login, cadastro e recuperação de senha --------------------------------- */
 
 .auth-layout {
   position: relative;
@@ -3436,6 +3465,8 @@ form[aria-busy="true"] .auth-submit {
   font-size: 22px;
 }
 
+/* Perfil e configurações -------------------------------------------------- */
+
 .mobile-nav {
   display: none;
 }
@@ -3610,6 +3641,8 @@ form[aria-busy="true"] .auth-submit {
 .success-banner.is-visible {
   display: block;
 }
+
+/* Adaptações para diferentes telas ---------------------------------------- */
 
 @media (min-width: 901px) and (max-height: 720px) {
   .auth-layout {
@@ -4113,6 +4146,7 @@ form[aria-busy="true"] .auth-submit {
   }
 }
 
+/* Respeita a preferência do sistema por menos animações. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

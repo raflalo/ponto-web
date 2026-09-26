@@ -9,6 +9,10 @@
   var API_BASE_URL = "http://127.0.0.1:5001/api";
   var TOKEN_KEY = "ponto-plus-access-token";
 
+  // ---------------------------------------------------------------------------
+  // Armazenamento da sessão
+  // ---------------------------------------------------------------------------
+
   function accessToken() {
     return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
   }
@@ -24,6 +28,7 @@
     sessionStorage.removeItem(TOKEN_KEY);
   }
 
+  // Centraliza autenticação, limite de espera e mensagens de erro de toda chamada.
   async function request(path, options) {
     var config = Object.assign({ method: "GET" }, options || {});
     var token = accessToken();
@@ -68,6 +73,10 @@
       clearTimeout(timeout);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Contrato público usado pelo controlador da interface (app.js)
+  // ---------------------------------------------------------------------------
 
   window.PontoPlusApi = {
     accessToken: accessToken,

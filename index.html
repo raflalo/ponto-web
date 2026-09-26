@@ -9,6 +9,7 @@
     />
     <title>Ponto+</title>
     <link rel="icon" href="./assets/brand/logo-mark.svg" type="image/svg+xml" />
+    <!-- Define o tema antes de carregar o CSS e evita uma troca de cores visível. -->
     <script>
       (function () {
         var saved = localStorage.getItem("ponto-plus-theme");
@@ -23,14 +24,18 @@
     <link rel="stylesheet" href="./css/styles.css" />
   </head>
   <body>
+    <!-- Recursos de acessibilidade disponíveis antes da interface dinâmica. -->
     <a class="skip-link" href="#main-content">Pular para o conteúdo</a>
     <noscript>
       <div class="noscript">
         O protótipo do Ponto+ precisa de JavaScript habilitado para navegar entre as telas.
       </div>
     </noscript>
+    <!-- O JavaScript monta as telas neste ponto conforme a rota atual. -->
     <div id="app" aria-live="off"></div>
+    <!-- Região invisível usada para anunciar confirmações a leitores de tela. -->
     <div id="announcer" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+    <!-- A comunicação com a API precisa estar disponível antes do controlador. -->
     <script src="./js/api.js"></script>
     <script src="./js/app.js"></script>
   </body>
