@@ -21,5 +21,5 @@ Não é necessário iniciar um servidor para o front-end. Com a API em execuçã
 
 ## Login da conta demo
 
-e-mail: teste@teste.com
+e-mail: teste@teste.com  
 senha: Teste123!
