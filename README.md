@@ -1,6 +1,6 @@
 # Ponto+ Web
 
-Interface web do Ponto+, um sistema pessoal para registrar e acompanhar a jornada de trabalho. O projeto foi desenvolvido com HTML, CSS e JavaScript, sem frameworks ou processo de build.
+Interface web do Ponto+, um sistema pessoal para registrar e acompanhar a jornada de trabalho. O projeto foi desenvolvido com HTML, CSS e JavaScript.
 
 ## Requisitos
 
@@ -18,3 +18,8 @@ Este projeto não possui dependências para a execução. Após baixar ou clonar
 ## Execução
 
 Não é necessário iniciar um servidor para o front-end. Com a API em execução, abra o `index.html` diretamente no Chrome ou Firefox.
+
+## Login da conta demo
+
+e-mail: teste@teste.com
+senha: Teste123!
